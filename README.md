@@ -52,8 +52,8 @@ Having successfully built all the dependencies, you can proceed to build the cod
 From within the `DROPLET_MFC` directory, you can run a mfc computation of different droplet actuations 
 and the approx. JKO scheme with PDHG solver:
 ```
-mpirun -np 16 -bind-to core:2 ./jko_lub -tc 34 
-mpirun -np 16 -bind-to core:2 ./drop -tc 34 
+mpirun -np 16 -bind-to core:2 ./jko_lub -tC 1 
+mpirun -np 16 -bind-to core:2 ./drop -tC 34 
 ```
 
 
