@@ -1,6 +1,14 @@
-// st-ho-JKO for droplet dynamics
-// testcase=12: 1D case
-// testcase=13: 2D case
+// MFC for droplet dynamics
+// coarse grid serial run: ./drop -tC xx -pr 0
+// fine grid paralle run:   mpirun -np 64 -bind-to core:2 ./drop -tC xx
+// Change the tC flag to the following for different droplet dynamics
+// testcase=32: 2D droplet transport
+// testcase=33: 2D droplet spreading
+// testcase=37: 2D droplet bead-up
+// testcase=34: 2D droplet merging
+// testcase=35: 2D droplet splitting
+// testcase=38: 2D asymmetric merging
+
 #include "mfem.hpp"
 #include <fstream>
 #include <iostream>
@@ -24,10 +32,7 @@ double cgrtol = 1e-6; // cg relative tolerance
 double cgatol = 1e-10; // cg absolute tolerance
 int cgi = 1000; // max # of cg iterations
 int iterPnt = 100; // print every iterPnt steps
-double gma = 0.01, beta = 0.01; // FIXME: we always take gma==beta
-int typeI = 0, typeV1 = 3, typeV2 = 3; 
-double typeE = 1.0;  // typeE = 1: E = rho(log(rho)-1)
-                     // typeE > 1: E = rho^typeE/(typeE-1)
+double gma = 0.01, beta = 0.01; 
 double c2 = 0.04; // reaction strength
 double sigma_phi = 1.0, sigma_u = 1.0; // PDHG parameters: always set to 1
 int test_case = 32; // 1D results
@@ -35,11 +40,9 @@ int test_case = 32; // 1D results
 bool jac = true;// jacobi smoother for div-div
 // Brent solver end ponts
 double rmin = 1e-4, rmax = 10.0;
-double t_end = 0.01;
-bool ho = true; // FIXME: high-order flag
 
 // control parameters
-double ci = 0.04, cb = 0.05, cB = 0;
+double ci = 0.02, cb = 0.05;
 
 int main(int argc, char *argv[])
 {
@@ -47,12 +50,12 @@ int main(int argc, char *argv[])
    Hypre::Init();
 
    const char *mesh_file = "data/square-quad.mesh";
-   int n_time = 4;
+   int n_time = 2;
    int ser_ref_levels = 0;
    int par_ref_levels = 0;
-   int h_refs = 4;
-   int p_refs = 0;
-   int maxit = 5000;
+   int h_refs = 3;
+   int p_refs = 2;
+   int maxit = 2000;
 
    OptionsParser args(argc, argv);
    // Mesh parameters & time step size
@@ -62,14 +65,12 @@ int main(int argc, char *argv[])
    args.AddOption(&par_ref_levels, "-rp", "--refine-parallel", "Parallel refinements.");
    args.AddOption(&h_refs, "-hr", "--h-refs", "Mesh (h) multigrid refinements.");
    args.AddOption(&p_refs, "-pr", "--p-refs", "Degree (p) multigrid refinements.");
-   args.AddOption(&test_case, "-tc", "--test-case", "Test case: 1, 2, or 3");
+   args.AddOption(&test_case, "-tC", "--tC", "test Case");
    // physical & control parameters
    args.AddOption(&gma, "-gamma", "--gamma", "gamma");
    args.AddOption(&eps, "-eps", "--eps", "eps");
    args.AddOption(&beta, "-beta", "--beta", "beta");
-   args.AddOption(&t_end, "-tend", "--tend", "final time");
    args.AddOption(&cb, "-cb", "--cb", "KL terminal strength");
-   //args.AddOption(&cB, "-cB", "--cB", "obstacle strength");
    args.AddOption(&ci, "-ci", "--ci", "interaction potential strength");
    args.AddOption(&c2, "-c2", "--c2", "reaction strength");
    // Solver parameters
@@ -79,30 +80,19 @@ int main(int argc, char *argv[])
    args.AddOption(&cgi, "-cgi", "--cgi", "cg max iteration");
    args.AddOption(&iterPnt, "-iP", "--iterPnt", "print every # steps");
    args.AddOption(&jac, "-jac", "--use-jac", "-lor", "--use-lor", "Use LOR or JAC preconditioner");
-   args.AddOption(&ho, "-ho", "--use-ho", "-lo", "--use-lo", "Use HO");
    // Parse arguments
    args.ParseCheck();
 
-   // FIXME: const time stepping
    const double Tf = 1.0;
-   const int maxJKO = (beta==0)? 1 : t_end/beta;
       
    string fileX = 'T'+to_string(test_case)+'H'+to_string(h_refs)+'P'+to_string(p_refs) \
                    +'B'+to_string(int(cb*100+0.1))+'I'+to_string(int(ci*100+0.1));
-   //                +'O'+to_string(int(cB+0.1));
 
    ParMesh coarse_space_mesh = [&]()
    {
       Mesh serial_mesh;
-      if (test_case == 36) // 2D with complex geom
-          serial_mesh = Mesh::LoadFromFile(mesh_file);
-      else if (test_case/10 == 2) // 1D drop tests
-         serial_mesh = Mesh::MakeCartesian1D(16, 1.0);
-      else if (test_case/10 == 3) // 2D drop tests
-         serial_mesh = Mesh::MakeCartesian2D(4, 4, Element::QUADRILATERAL, 
-             false, 1.0, 1.0);
-      else
-         serial_mesh = Mesh::LoadFromFile(mesh_file);
+      serial_mesh = Mesh::MakeCartesian2D(8, 8, Element::QUADRILATERAL, 
+          false, 1.0, 1.0);
 
       for (int l = 0; l < ser_ref_levels; l++) { serial_mesh.UniformRefinement(); }
       ParMesh par_mesh(MPI_COMM_WORLD, serial_mesh);
@@ -200,7 +190,6 @@ int main(int argc, char *argv[])
 
    // Set up coefficients and initial conditions
    FunctionCoefficient rho_drop_ex_coeff(rho_drop_ex);
-   FunctionCoefficient rho_obs_coeff(rho_obs);
    FunctionCoefficient rho_drop_target_coeff(rho_drop_target);
    
    // terminal data rho_T & n_T
@@ -231,11 +220,7 @@ int main(int argc, char *argv[])
 
    KroneckerQuadratureFunction u_qf(Qs, Qt, u_vdim); // (rho, m, n)
    KroneckerQuadratureFunction pq_qf(Qs, Qt, pq_vdim); // (p, q)
-   KroneckerQuadratureFunction s_qf(Qs, Qt, u_vdim); // (rho, m, n)
-   
-   // FIXME: no obstacle for now :(
-   //KroneckerQuadratureFunction rhoB_qf(Qs, Qt, 1); // obstacle
-   //rhoB_qf.ProjectComponent(rho_obs_coeff, 0);
+   KroneckerQuadratureFunction s_qf(Qs, Qt, 1);
 
    u_qf = 0.0;
    u_qf.ProjectComponent(rho_drop_ex_coeff, 0);
@@ -278,7 +263,7 @@ int main(int argc, char *argv[])
       ParLinearForm b_bdr_0(&Vs);
       b_bdr_0.AddDomainIntegrator(new DomainLFIntegrator(minus_rho_0_coeff));
       for (auto *i : *b_bdr_0.GetDLFI()) { i->SetIntRule(&ir_s); }
-      b_bdr_0.UseFastAssembly(true);
+      //b_bdr_0.UseFastAssembly(true);
       b_bdr_0.Assemble();
       b_bdr_0.ParallelAssemble(B_bdr_0);
    }
@@ -289,7 +274,7 @@ int main(int argc, char *argv[])
    ParLinearForm b_bdr_T(&Vs);
    b_bdr_T.AddDomainIntegrator(new DomainLFIntegrator(rho_T_coeff));
    for (auto *i : *b_bdr_T.GetDLFI()) { i->SetIntRule(&ir_s); }
-   b_bdr_T.UseFastAssembly(true);
+   //b_bdr_T.UseFastAssembly(true);
    b_bdr_T.Assemble();
    b_bdr_T.ParallelAssemble(B_bdr_T);
    
@@ -369,9 +354,9 @@ int main(int argc, char *argv[])
 
    if (Mpi::Root())
    {
-      std::cout << "\nJKO  PHDG  CG1   CG2   CG3   CG4   CG5   Nonlin Error  Error-T       "
+      std::cout << "\nPHDG  CG1   CG2   CG3   CG4   CG5   Nonlin Error  Error-T       "
                 << "Phi time    Sigma time   Nonlin time\n";
-      std::cout << std::string(100, '=') << std::endl;
+      std::cout << std::string(110, '=') << std::endl;
    }
 
 
@@ -400,7 +385,7 @@ int main(int argc, char *argv[])
    };
    
    // Post-process
-   auto vis = [&](bool lor, int kk)
+   auto vis = [&](bool lor)
    {
       ParMesh lor_space_mesh;
       if (lor)
@@ -425,56 +410,112 @@ int main(int argc, char *argv[])
       time_mesh.GetNodes(time_nodes);
 
       ParGridFunction rho_gf(&Ws);
+      ParGridFunction zeta_gf(&Ws);
+      ParGridFunction ss_gf(&Ws);
       ParGridFunction rho_err_gf(&Ws);
-      ParGridFunction vel_gf(&WVs);
-      ParGridFunction mom_gf0(&Ws);
+      ParGridFunction m_gf(&WVs);
+      ParGridFunction m_gf0(&Ws);
 
       Vector tdof_vec(nWs);
+      Vector pdof_vec(nWs);
+      Vector sdof_vec(nWs);
+      Vector zdof_vec(nWs);
       
-      ParaViewDataCollection pv(lor ? "DROP_LOR_"+fileX+"_"+to_string(kk) : 
-          "DROP_"+fileX+"_"+to_string(kk), &vis_mesh);
+      ParaViewDataCollection pv(lor ? "DROP_LOR_"+fileX : 
+          "DROP_"+fileX, &vis_mesh);
       pv.SetPrefixPath("ParaView");
       pv.SetHighOrderOutput(!lor);
       pv.SetLevelsOfDetail(vis_order + 1);
       pv.RegisterField("rho", &rho_gf);
+      pv.RegisterField("zeta", &zeta_gf);
       pv.RegisterField("rho_err", &rho_err_gf);
-      pv.RegisterField("vel", &vel_gf);
+      pv.RegisterField("flux", &m_gf);
+      pv.RegisterField("source", &ss_gf);
 
       auto save_time = [&](const double t)
       {
          GetTimeSlice(u_qf, tdof_vec, t, 0, u_vdim, Ws, Wt, lor);
          rho_gf.SetFromTrueDofs(tdof_vec);
+         // p 
+         GetTimeSlice(pq_qf, pdof_vec, t, 0, pq_vdim, Ws, Wt, lor);
+         // phi
+         GetTimeSlice(ds_qf, sdof_vec, t, 0, 1, Ws, Wt, lor);
+         // zeta = (beta*(U'+p) + phi)/h
+         for (int i = 0; i<nWs; i++){
+             double hx = tdof_vec[i];
+             double phix = sdof_vec[i];
+             double px = pdof_vec[i];
+             zdof_vec[i] = (beta*(dE_drop(hx)+px)+phix)/hx;
+         }
+         zeta_gf.SetFromTrueDofs(zdof_vec);
          
          // The error vector
          GetTimeSlice(rho_err_qf, tdof_vec, t, 0, 1, Ws, Wt, lor);
          rho_err_gf.SetFromTrueDofs(tdof_vec);
-
+         
+         // m
          for (int d=0; d<dim_s; d++)
          {
             GetTimeSlice(u_qf, tdof_vec, t, d+1, u_vdim, Ws, Wt, lor);
-            mom_gf0.SetFromTrueDofs(tdof_vec);
+            m_gf0.SetFromTrueDofs(tdof_vec);
             for (int idx =0; idx< nWs; idx++)
             {
-               double val =  mom_gf0[idx]/rho_gf[idx];
-               vel_gf[idx + d*nWs] = (abs(val) < 10) ? val : 0.0;
+               m_gf[idx + d*nWs] = m_gf0[idx];
             }
          }
+         
+         // s 
+         GetTimeSlice(s_qf, tdof_vec, t, 0, 1, Ws, Wt, lor);
+         ss_gf.SetFromTrueDofs(tdof_vec);
 
          pv.SetTime(t);
          pv.SetCycle(pv.GetCycle() + 1);
          pv.Save();
       };
       
-      if (ho==true){
-          for (int k = 0; k < 11; ++k) 
-              save_time(0.1*k);
-      }
-      // terminal density
-      rho_gf = rho_T_qf;
-      rho_err_gf = rho_T_err_qf;
-      pv.SetTime(1.1);
-      pv.SetCycle(pv.GetCycle() + 1);
-      pv.Save();
+      // time 0 to 0.9
+      for (int k = 0; k < 10; ++k) 
+          save_time(0.1*k);
+      
+      // final time soln: use rho_T_qf
+      {
+         rho_gf = rho_T_qf;
+         rho_err_gf = rho_T_err_qf;
+         // p 
+         GetTimeSlice(pq_qf, pdof_vec, 1.0, 0, pq_vdim, Ws, Wt, lor);
+         // phi
+         GetTimeSlice(ds_qf, sdof_vec, 1.0, 0, 1, Ws, Wt, lor);
+         // zeta = (beta*(U'+p) + phi)/h
+         for (int i = 0; i<nWs; i++){
+             double hx = rho_gf[i];
+             double phix = sdof_vec[i];
+             double px = pdof_vec[i];
+             zdof_vec[i] = (beta*(dE_drop(hx)+px)+phix)/hx;
+         }
+         zeta_gf.SetFromTrueDofs(zdof_vec);
+         
+         // The error vector
+         GetTimeSlice(rho_err_qf, tdof_vec, 1.0, 0, 1, Ws, Wt, lor);
+         rho_err_gf.SetFromTrueDofs(tdof_vec);
+
+         for (int d=0; d<dim_s; d++)
+         {
+            GetTimeSlice(u_qf, tdof_vec, 1.0, d+1, u_vdim, Ws, Wt, lor);
+            m_gf0.SetFromTrueDofs(tdof_vec);
+            for (int idx =0; idx< nWs; idx++)
+            {
+               m_gf[idx + d*nWs] = m_gf0[idx];
+            }
+         }
+         
+         // s 
+         GetTimeSlice(s_qf, tdof_vec, 1.0, 0, 1, Ws, Wt, lor);
+         ss_gf.SetFromTrueDofs(tdof_vec);
+
+         pv.SetTime(1.0);
+         pv.SetCycle(pv.GetCycle() + 1);
+         pv.Save();
+      };
    };
    
    StopWatch sw_a, sw_b, sw_c, sw_d, sw_e, sw_f;
@@ -485,339 +526,332 @@ int main(int argc, char *argv[])
    std::vector<double> errorTList;
             
    // initial data, save
-   vis(false, 0);         
-   vis(true, 0);
+   vis(false);         
+   vis(true);
 
-   // JKO Loop
-   for (int jko=0; jko < maxJKO ; jko++)
+   // PDHG loop
+   for (int iter = 0; iter < maxit; ++iter)
    {
-       // ALG loop
-       for (int iter = 0; iter < maxit; ++iter)
-       {
-          // (1) Solve for dphi
-          sw_a.Start();
-          // the (dynamic) linear form for phi
-          B_0.Update(u_qf, s_qf);
-          // Add the boundary contributions
-          {
-             Vector B_bdr_slice_0(B_0, 0, nVs);
-             B_bdr_slice_0 += B_bdr_0;
+      // (1) Solve for dphi
+      sw_a.Start();
+      // the (dynamic) linear form for phi
+      B_0.Update(u_qf, s_qf);
+      // Add the boundary contributions
+      {
+         Vector B_bdr_slice_0(B_0, 0, nVs);
+         B_bdr_slice_0 += B_bdr_0;
 
-             // Terminal boundary needs to be recomputed
-             b_bdr_T.Assemble();
-             b_bdr_T.ParallelAssemble(B_bdr_T);
-             Vector B_bdr_slice_T(B_0, n_time*nVs, nVs);
-             B_bdr_slice_T += B_bdr_T;
-          }
+         // Terminal boundary needs to be recomputed
+         b_bdr_T.Assemble();
+         b_bdr_T.ParallelAssemble(B_bdr_T);
+         Vector B_bdr_slice_T(B_0, n_time*nVs, nVs);
+         B_bdr_slice_T += B_bdr_T;
+      }
 
-          // Solve the system, dX_0 gives the t-dof values of dphi increment
-          dX_0 = 0.0;
-          cg_0.Mult(B_0, dX_0);
-          // scale dX_0 with sigma_phi
-          dX_0 *= sigma_phi;
-          sw_a.Stop();
+      // Solve the system, dX_0 gives the t-dof values of dphi increment
+      dX_0 = 0.0;
+      cg_0.Mult(B_0, dX_0);
+      // scale dX_0 with sigma_phi
+      dX_0 *= sigma_phi;
+      sw_a.Stop();
 
-          // NOTE: dphi_qf is the whole space-time gradient of dX_0
-          dphi_qf.ProjectGradient(dX_0, Vs, Vt);
-          // Boundary interpolation (terminal time)
-          face_interp.Project(dX_0, dphi_T_qf, n_time);
+      // NOTE: dphi_qf is the whole space-time gradient of dX_0
+      dphi_qf.ProjectGradient(dX_0, Vs, Vt);
+      // Boundary interpolation (terminal time)
+      face_interp.Project(dX_0, dphi_T_qf, n_time);
 
-          X_0 += dX_0;
-          dX_0 += X_0;
+      X_0 += dX_0;
+      dX_0 += X_0;
 
-          if (ho){
-              // use sigma/xi/theta to recover h.o. time 
-              // (2) Solve for sigma
-              sw_b.Start();
-              // Fisher
-              B_1.Update(u_qf, dphi_qf);
-              // Enforce essential BCs
-              for (int it = 0; it < nSt; ++it)
-              {
-                 Vector B_1_slice(B_1, it*nSs, nSs);
-                 B_1_slice.SetSubVector(ess_dofs_s, 0.0);
-              }
-              dX_1 = 0.0;
-              div_div_solver.Mult(B_1, dX_1);
-              // scale dX_1 with sigma_phi
-              dX_1 *= sigma_phi;
-              sw_b.Stop();
+      // use sigma/xi/theta to recover h.o. time 
+      // (2) Solve for sigma
+      sw_b.Start();
+      // Fisher
+      B_1.Update(u_qf, dphi_qf);
+      // Enforce essential BCs
+      for (int it = 0; it < nSt; ++it)
+      {
+         Vector B_1_slice(B_1, it*nSs, nSs);
+         B_1_slice.SetSubVector(ess_dofs_s, 0.0);
+      }
+      dX_1 = 0.0;
+      div_div_solver.Mult(B_1, dX_1);
+      // scale dX_1 with sigma_phi
+      dX_1 *= sigma_phi;
+      sw_b.Stop();
 
-              // NOTE: dsigma_qf is sigma function evaluation
-              dsigma_qf.ProjectValue(dX_1, Ss, St);
+      // NOTE: dsigma_qf is sigma function evaluation
+      dsigma_qf.ProjectValue(dX_1, Ss, St);
 
-              X_1 += dX_1;
-              dX_1 += X_1;
-              
-              // (3) Solve for xi
-              sw_c.Start();
-              // Fisher
-              B_2.Update(u_qf, pq_qf, dsigma_qf);
-              for (int it = 0; it < nSt; ++it)
-              {
-                 Vector B_2_slice(B_2, it*nVs, nVs);
-                 B_2_slice.SetSubVector(ess_dofs_v, 0.0);
-              }
-              dX_2 = 0.0;
-              cg_2.Mult(B_2, dX_2);
-              // scale dX_1 with sigma_phi
-              dX_2 *= sigma_phi;
-              sw_c.Stop();
-              
-              // NOTE: dsigma_qf is sigma function evaluation
-              dxi_qf.ProjectValue(dX_2, Vs, St);
+      X_1 += dX_1;
+      dX_1 += X_1;
+      
+      // (3) Solve for xi
+      sw_c.Start();
+      // Fisher
+      B_2.Update(u_qf, pq_qf, dsigma_qf);
+      for (int it = 0; it < nSt; ++it)
+      {
+         Vector B_2_slice(B_2, it*nVs, nVs);
+         B_2_slice.SetSubVector(ess_dofs_v, 0.0);
+      }
+      dX_2 = 0.0;
+      cg_2.Mult(B_2, dX_2);
+      // scale dX_1 with sigma_phi
+      dX_2 *= sigma_phi;
+      sw_c.Stop();
+      
+      // NOTE: dsigma_qf is sigma function evaluation
+      dxi_qf.ProjectValue(dX_2, Vs, St);
 
-              X_2 += dX_2;
-              dX_2 += X_2;
+      X_2 += dX_2;
+      dX_2 += X_2;
 
-              // (4) Solve for theta
-              sw_d.Start();
-              B_3.Update(pq_qf, dxi_qf, true);
-              // Enforce essential BCs
-              for (int it = 0; it < nSt; ++it)
-              {
-                 Vector B_3_slice(B_3, it*nSs, nSs);
-                 B_3_slice.SetSubVector(ess_dofs_s, 0.0);
-              }
-              dX_3 = 0.0;
-              div_div_solver.Mult(B_3, dX_3);
-              // scale dX_1 with sigma_phi
-              dX_3 *= sigma_phi;
-              sw_d.Stop();
+      // (4) Solve for theta
+      sw_d.Start();
+      B_3.Update(pq_qf, dxi_qf, true);
+      // Enforce essential BCs
+      for (int it = 0; it < nSt; ++it)
+      {
+         Vector B_3_slice(B_3, it*nSs, nSs);
+         B_3_slice.SetSubVector(ess_dofs_s, 0.0);
+      }
+      dX_3 = 0.0;
+      div_div_solver.Mult(B_3, dX_3);
+      // scale dX_1 with sigma_phi
+      dX_3 *= sigma_phi;
+      sw_d.Stop();
 
-              X_3 += dX_3;
-              dX_3 += X_3;
-          }
-          // (5) Solve for sigma_T
-          B_T.Update(rho_T_qf, n_T_qf, dphi_T_qf);
-          // set boundary conditions TODO
-          for (auto dd: ess_dofs_s)
-            B_T[dd] = 0;
-          dX_T = 0.0;
-          cg_T.Mult(B_T, dX_T);
+      X_3 += dX_3;
+      dX_3 += X_3;
+      
+      // (5) Solve for sigma_T
+      B_T.Update(rho_T_qf, n_T_qf, dphi_T_qf);
+      // set boundary conditions TODO
+      for (auto dd: ess_dofs_s)
+        B_T[dd] = 0;
+      dX_T = 0.0;
+      cg_T.Mult(B_T, dX_T);
 
-          X_T += dX_T;
-          dX_T += X_T;
-          
+      X_T += dX_T;
+      dX_T += X_T;
+      
+      // ********************************************
+      dphi_qf.ProjectGradient(dX_0, Vs, Vt);
+      ds_qf.ProjectValue(dX_0, Vs, Vt);
+      dsigma_qf.ProjectValue(dX_1, Ss, St);
+      divs_qf.ProjectDivergence(dX_1, Ss, St);
+      dxi_qf.ProjectValue(dX_2, Vs, St);
+      gradxi_qf.ProjectSpaceGradient(dX_2, Vs, St);
+      dtheta_qf.ProjectValue(dX_3, Ss, St);
+      divt_qf.ProjectDivergence(dX_3, Ss, St);
+      // add gma*div(sigma) to last component (time derivative) of dphi
+      // add gma*grad(xi) to dsigma
+      // add gma*div(theta) to xi
+      for (int i = 0; i < nQ; ++i)
+      {
+         dphi_qf[dim - 1 + i*dim] += gma * divs_qf[i];
+         for (int d=0; d < dim_s; d++)
+           dsigma_qf[d + i*dim_s] += gma * gradxi_qf[d+i*dim_s];
+         dxi_qf[i] += gma * divt_qf[i];
+      }
 
-          // ********************************************
-          dphi_qf.ProjectGradient(dX_0, Vs, Vt);
-          ds_qf.ProjectValue(dX_0, Vs, Vt);
-          dsigma_qf.ProjectValue(dX_1, Ss, St);
-          divs_qf.ProjectDivergence(dX_1, Ss, St);
-          dxi_qf.ProjectValue(dX_2, Vs, St);
-          gradxi_qf.ProjectSpaceGradient(dX_2, Vs, St);
-          dtheta_qf.ProjectValue(dX_3, Ss, St);
-          divt_qf.ProjectDivergence(dX_3, Ss, St);
-          if (ho){
-              // add gma*div(sigma) to last component (time derivative) of dphi
-              // add gma*grad(xi) to dsigma
-              // add gma*div(theta) to xi
-              for (int i = 0; i < nQ; ++i)
-              {
-                 dphi_qf[dim - 1 + i*dim] += gma * divs_qf[i];
-                 for (int d=0; d < dim_s; d++)
-                   dsigma_qf[d + i*dim_s] += gma * gradxi_qf[d+i*dim_s];
-                 dxi_qf[i] += gma * divt_qf[i];
-              }
-          }
+      // project dphi_T_qf, sigmaT & div(sigmaT)
+      face_interp.Project(dX_0, dphi_T_qf, n_time);
+      sigma_T_gf.SetFromTrueDofs(dX_T);
+      qpt_interp(sigma_T_gf, dsigma_T_qf, QF_VALS);
+      qpt_interp(sigma_T_gf, divs_T_qf,   QF_DIVS);
+      
 
-          // project dphi_T_qf, sigmaT & div(sigmaT)
-          face_interp.Project(dX_0, dphi_T_qf, n_time);
-          sigma_T_gf.SetFromTrueDofs(dX_T);
-          qpt_interp(sigma_T_gf, dsigma_T_qf, QF_VALS);
-          qpt_interp(sigma_T_gf, divs_T_qf,   QF_DIVS);
-          
+      sw_e.Start();
+      // Pointwise nonlinear solve:: volumne part
+      uintmax_t max_nonlin_it = 0;
+      {
+         double rho, rhobar, sbar, pbar, mbar2, sbar2;
+         Vector mbar(dim-1), qbar(dim-1), nbar(dim-1);
 
-          sw_e.Start();
-          // Pointwise nonlinear solve:: volumne part
-          uintmax_t max_nonlin_it = 0;
-          {
-             double rho, rhobar, sbar, pbar, mbar2, sbar2;
-             Vector mbar(dim-1), qbar(dim-1), nbar(dim-1);
+         for (int j = 0; j < nQ; j++)
+         {
+            mbar2 = 0;
+            sbar2 = 0;
+            for (int d = 0; d < dim_s; ++d)
+            {
+               // Note: vdim(dphi_qf)   = dim
+               //       vdim(dsigma_qf) = dim_s
+               //       vdim(u_qf)      = u_vdim
+               // Recall u = (rho, m, n)
+               // m-part
+               mbar[d] = sigma_u * dphi_qf[d + j*dim] + u_qf[d+1 + j*u_vdim];
+               mbar2 += pow(mbar[d], 2);
+               // n-part
+               nbar[d] = sigma_u * dsigma_qf[d + j*dim_s] + u_qf[dim + d + j*u_vdim];
+               // q-part
+               qbar[d] = -sigma_u * dtheta_qf[d + j*dim_s] 
+                 + pq_qf[1 + d + j*pq_vdim];
+            }
+            // density
+            rho = u_qf[j*u_vdim];
+            rhobar = sigma_u * dphi_qf[dim - 1 + j*dim] + rho;
+            // source
+            sbar = sigma_u * ds_qf[j] + s_qf[j];
+            sbar2 = sbar*sbar;
+            // p-part
+            pbar = -sigma_u * dxi_qf[j] + pq_qf[j*pq_vdim];
 
-             for (int j = 0; j < nQ; j++)
-             {
-                mbar2 = 0;
-                sbar2 = 0;
-                for (int d = 0; d < dim_s; ++d)
-                {
-                   // Note: vdim(dphi_qf)   = dim
-                   //       vdim(dsigma_qf) = dim_s
-                   //       vdim(u_qf)      = u_vdim
-                   // Recall u = (rho, m, n)
-                   // m-part
-                   mbar[d] = sigma_u * dphi_qf[d + j*dim] + u_qf[d+1 + j*u_vdim];
-                   mbar2 += pow(mbar[d], 2);
-                   // n-part
-                   nbar[d] = sigma_u * dsigma_qf[d + j*dim_s] + u_qf[dim + d + j*u_vdim];
-                   // q-part
-                   qbar[d] = -sigma_u * dtheta_qf[d + j*dim_s] 
-                     + pq_qf[1 + d + j*pq_vdim];
-                }
-                // density
-                rho = u_qf[j*u_vdim];
-                rhobar = sigma_u * dphi_qf[dim - 1 + j*dim] + rho;
-                // source
-                sbar = sigma_u * ds_qf[j] + s_qf[j];
-                sbar2 = sbar*sbar;
-                // p-part
-                pbar = -sigma_u * dxi_qf[j] + pq_qf[j*pq_vdim];
+            rho_err_qf[j] = rho;
+            
+            std::uintmax_t nonlin_it = 100;
+            auto func = [rhobar, mbar2, nbar, sbar2, pbar, qbar](double x)
+            {
+               return F_drop(x, rhobar, mbar2, nbar, sbar2, pbar, qbar, ci);
+            };
 
-                rho_err_qf[j] = rho;
-                // FIXME: rhoB may contain additional info. for interaction
-                // potential, we don't use it now.
-                //double rhoB = rhoB_qf[j];
-                
-                std::uintmax_t nonlin_it = 100;
-                auto func = [rhobar, mbar2, nbar, sbar2, pbar, qbar](double x)
-                {
-                   return F_drop(x, rhobar, mbar2, nbar, sbar2, pbar, qbar, ho, ci);
-                };
+            auto res = boost::math::tools::brent_find_minima(
+               func, rmin, rmax, double_bits, nonlin_it);
+            rho = res.first;
+            max_nonlin_it = std::max(max_nonlin_it, nonlin_it);
 
-                auto res = boost::math::tools::brent_find_minima(
-                   func, rmin, rmax, double_bits, nonlin_it);
-                rho = res.first;
-                max_nonlin_it = std::max(max_nonlin_it, nonlin_it);
+            rho_err_qf[j] -= rho;
 
-                rho_err_qf[j] -= rho;
+            // density update
+            u_qf[j*u_vdim] = rho;
+            const double v1r = V1(rho);
+            const double v2r = V2(rho);
+            const double de  = dE_drop(rho);
+            const double d2e  = d2E_drop(rho);
+            const double sigma_r_v1 = sigma_u * beta * beta / gma / gma *v1r;
+            const double fac = 1.0 + sigma_r_v1 * (1+ d2e*d2e);
+            // m & n & q update
+            for (int d = 0; d < dim-1; d++)
+            {
+               // m
+               u_qf[d+1 + j*u_vdim] = v1r/(sigma_u+v1r)*mbar(d);
+               // n
+               u_qf[d+dim + j*u_vdim] = (-sigma_r_v1*d2e*qbar(d)
+                   +(1+sigma_r_v1)*nbar(d))/fac;
+               // q
+               pq_qf[1+d+j*pq_vdim] = ((1+sigma_r_v1*d2e*d2e)*qbar(d)
+                   -sigma_r_v1*d2e*nbar(d))/fac;
+            }
+            // p & s updates
+            pq_qf[j*pq_vdim] = (pbar-sigma_u*beta*beta*de*v2r)/(1
+                +sigma_u*beta*beta*v2r);
+            s_qf[j] = v2r/(sigma_u+v2r)*sbar;
+         }
+      }
+            
+      sw_e.Stop();
+      
+      sw_f.Start();
+      // Pointwise nonlinear solve:: boundary part
+      for (int j = 0; j < nQs; ++j)
+      {
+         double rhobar = sigma_u * (-dphi_T_qf[j] + gma *divs_T_qf[j] )
+           + rho_T_qf[j];
+         double rho = rho_T_qf[j];
+         double rho_T = rho_T1_qf[j];
 
-                // density update
-                u_qf[j*u_vdim] = rho;
-                const double v1r = V1(rho);
-                const double v2r = V2(rho);
-                const double v3r = V3(rho);
-                const double de  = dE_drop(rho);
-                const double d2e  = d2E_drop(rho);
-                const double sigma_r_v1 = sigma_u * beta * beta / gma / gma *v1r;
-                const double fac = 1.0 + sigma_r_v1 * (1+ d2e*d2e);
-                // m & n & q update
-                for (int d = 0; d < dim-1; d++)
-                {
-                   // m
-                   u_qf[d+1 + j*u_vdim] = v1r/(sigma_u+v1r)*mbar(d);
-                   // n
-                   u_qf[d+dim + j*u_vdim] = (-sigma_r_v1*d2e*qbar(d)
-                       +(1+sigma_r_v1)*nbar(d))/fac;
-                   // q
-                   pq_qf[1+d+j*pq_vdim] = ((1+sigma_r_v1*d2e*d2e)*qbar(d)
-                       -sigma_r_v1*d2e*nbar(d))/fac;
-                }
-                // p & s updates
-                pq_qf[j*pq_vdim] = (pbar-sigma_u*beta*beta*de*v2r)/(1
-                    +sigma_u*beta*beta*v2r);
-                s_qf[j] = v2r/(sigma_u+v2r)*sbar;
-             }
-          }
-                
-          sw_e.Stop();
-          
-          sw_f.Start();
-          // Pointwise nonlinear solve:: boundary part
-          for (int j = 0; j < nQs; ++j)
-          {
-             double rhobar = sigma_u * (-dphi_T_qf[j] + gma *divs_T_qf[j] )
-               + rho_T_qf[j];
-             double rho = rho_T_qf[j];
-             double rho_T = rho_T1_qf[j];
+         double rho_err = rho;
 
-             double rho_err = rho;
+         std::uintmax_t nonlin_it = 100;
+         auto func = [rhobar, rho_T](double x)
+         {
+            return Fb_drop(x, rhobar, rho_T, cb);
+         };
 
-             std::uintmax_t nonlin_it = 100;
-             auto func = [rhobar, rho_T](double x)
-             {
-                return Fb_drop(x, rhobar, rho_T, cb);
-             };
+         auto res = boost::math::tools::brent_find_minima(
+            func, rmin, rmax, double_bits, nonlin_it);
+         // update terminal density
+         rho_T_qf[j] = res.first;
+         rho_err -= res.first; // the error vector
+         rho_T_err_qf[j] = abs(rho_err);
+         
+         // the n_T_qf part
+         for (int d=0; d<dim_s;d++)
+         {
+            int idx = j*dim_s+d;
+            double nbar = sigma_u * dsigma_T_qf[idx] + n_T_qf[idx];
+            n_T_qf[idx] = nbar/(1.0+sigma_u * beta);
+         }
+      }
+      sw_f.Stop();
+      
+      // compute L1 errors
+      double error = rho_err_qf.L1Norm();
+      double errorT = rho_T_err_qf.Integrate();
+      errorList.push_back(error);
+      errorTList.push_back(errorT);
 
-             auto res = boost::math::tools::brent_find_minima(
-                func, rmin, rmax, double_bits, nonlin_it);
-             // update terminal density
-             rho_T_qf[j] = res.first;
-             rho_err -= res.first; // the error vector
-             rho_T_err_qf[j] = abs(rho_err);
-             
-             // the n_T_qf part
-             for (int d=0; d<dim_s;d++)
-             {
-                int idx = j*dim_s+d;
-                double nbar = sigma_u * dsigma_T_qf[idx] + n_T_qf[idx];
-                n_T_qf[idx] = nbar/(1.0+sigma_u * beta);
-             }
-          }
-          sw_f.Stop();
-
-          if ((iter+1)%iterPnt == 0)
-          {  // compute L1 errors
-             double error = rho_err_qf.L1Norm();
-             double errorT = rho_T_err_qf.Integrate();
-             
-             MPI_Allreduce(MPI_IN_PLACE, &iter,  1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-             if (Mpi::Root())
-             {
-                 cout << scientific << setprecision(3) << left
-                      << setw(6) << jko
-                      << setw(6) << iter+1
-                      << setw(6) << cg_0.GetNumIterations()
-                      << setw(6) << cg_2.GetNumIterations()
-                      << setw(6) << cg_T.GetNumIterations()
-                      << fixed << setprecision(0)
-                      << setw(6) << div_div_solver.GetAverageIterations()
-                      << scientific << setprecision(3)
-                      << setw(8) << max_nonlin_it
-                      << setw(13) << scientific << error
-                      << setw(13) << scientific << errorT
-                      << setw(13) << sw_a.RealTime() // phi solve
-                      << setw(13) << sw_b.RealTime() // sigma solve
-                      << setw(13) << sw_c.RealTime() // newton step
-                      << endl;
-                 errorList.push_back(error);
-                 errorTList.push_back(errorT);
-             }
-             if (ho)
-                 // PDHG tolerance 
-                 if ((error < 1e-6 || errorT < 1e-6) && iter > 20)
-                   break;
-             else
-                 // PDHG tolerance 
-                 if ((error < 5e-6 || errorT < 5e-6) && iter > 20)
-                   break;
-          }
-          if ((iter+1)%100==0 && ho){ // visualize every 1000 iterations
-            vis(false, jko);
-            vis(true, jko);
-          }
+      if ((iter+1)%iterPnt == 0)
+      {  
+         MPI_Allreduce(MPI_IN_PLACE, &iter,  1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+         if (Mpi::Root())
+         {
+             cout << scientific << setprecision(3) << left
+                  << setw(6) << iter+1
+                  << setw(6) << cg_0.GetNumIterations()
+                  << setw(6) << cg_2.GetNumIterations()
+                  << setw(6) << cg_T.GetNumIterations()
+                  << fixed << setprecision(0)
+                  << setw(6) << div_div_solver.GetAverageIterations()
+                  << scientific << setprecision(3)
+                  << setw(8) << max_nonlin_it
+                  << setw(13) << scientific << error
+                  << setw(13) << scientific << errorT
+                  << setw(13) << sw_a.RealTime() // phi solve
+                  << setw(13) << sw_b.RealTime() // sigma solve
+                  << setw(13) << sw_c.RealTime() // newton step
+                  << endl;
+         }
+      }
+      if ((iter+1)%100==0){ // visualize every 100 iterations
+        vis(false);
+        vis(true);
+      }
+      
+      // exit loop
+      if (error < 1e-6 || errorT < 1e-6){
+         if (Mpi::Root())
+         {
+             cout << scientific << setprecision(3) << left
+                  << setw(6) << iter+1
+                  << setw(6) << cg_0.GetNumIterations()
+                  << setw(6) << cg_2.GetNumIterations()
+                  << setw(6) << cg_T.GetNumIterations()
+                  << fixed << setprecision(0)
+                  << setw(6) << div_div_solver.GetAverageIterations()
+                  << scientific << setprecision(3)
+                  << setw(8) << max_nonlin_it
+                  << setw(13) << scientific << error
+                  << setw(13) << scientific << errorT
+                  << setw(13) << sw_a.RealTime() // phi solve
+                  << setw(13) << sw_b.RealTime() // sigma solve
+                  << setw(13) << sw_c.RealTime() // newton step
+                  << endl;
+         }
+         break;
+      }
+   }
+   
+   vis(false);
+   vis(true);
+   if (Mpi::Root()){
+       // save PDHG converge history
+       std::ofstream outputFile("ParaView/DROP_"+fileX+"/V.txt");
+       // Write vector elements to the file
+       for (auto value : errorList) {
+           outputFile << value << endl;
        }
+       // Close the file
+       outputFile.close();
        
-       if (ho){
-          vis(false, jko);
-          vis(true, jko);
-       } else {// JKO save every 20 steps
-           if ((jko+1)%20==0){
-              vis(false, jko);
-              vis(true, jko);
-           }
+       std::ofstream outputFileT("ParaView/DROP_"+fileX+"/B.txt");
+       // Write vector elements to the file
+       for (auto value : errorTList) {
+           outputFileT << value << endl;
        }
-       if (Mpi::Root()){
-           // save PDHG converge history
-           std::ofstream outputFile("ParaView/DROP_"+fileX+"_"+to_string(jko)+"/V.txt");
-           // Write vector elements to the file
-           for (auto value : errorList) {
-               outputFile << value << endl;
-           }
-           // Close the file
-           outputFile.close();
-           
-           std::ofstream outputFileT("ParaView/DROP_"+fileX+"_"+to_string(jko)+"/B.txt");
-           // Write vector elements to the file
-           for (auto value : errorTList) {
-               outputFileT << value << endl;
-           }
-           // Close the file
-           outputFileT.close();
-       }
-
-       B_bdr_0 =  B_bdr_T;
-       B_bdr_0 *= -1;
+       // Close the file
+       outputFileT.close();
    }
 
    return 0;

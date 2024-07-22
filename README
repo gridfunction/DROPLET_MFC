@@ -1,2 +1,0 @@
-make drop 
-mpirun -np 8 ./drop 
