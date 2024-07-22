@@ -1,4 +1,4 @@
-# WassersteinBarycenter
+# Mean-Field Control for Droplet Dynamics
 This README file provides an overview of the repository and instructions on how to build and use the provided codes to compute the FEM/JKO schemes for the lubrication model (in NGSolve), and the mean-field control of droplet dynamics (in MFEM).
 These codes accompany the manuscript [here](http://https://arxiv.org/abs/2402.05923). 
 
