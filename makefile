@@ -25,7 +25,7 @@ BUILD_DIR=build
 SOURCES=wass_params.cpp wass_rhs.cpp wass_laplace.cpp wass_multigrid.cpp divdiv.cpp 
 OBJECTS=$(SOURCES:%.cpp=$(BUILD_DIR)/%.o)
 
-APPS=drop drop_jko jko_lub
+APPS=drop jko_lub
 APP_SRC=$(APPS:%=%.cpp)
 
 CXXFLAGS=-g $(MFEM_CXXFLAGS)

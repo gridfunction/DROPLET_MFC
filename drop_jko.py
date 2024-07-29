@@ -107,6 +107,9 @@ vtk.Do()
 xGrid = np.linspace(0, 1, 201)
 
 hList = []
+massList = []
+mass = Integrate(hh, mesh)
+massList.append(mass)
 count = 0
 with TaskManager():
     while t < tend+dt/2:
@@ -122,7 +125,10 @@ with TaskManager():
                 hList.append(hGrid)
 
             print(t, count)
-        print('\r Time: %.2e, count: %4i, iter: %4i'%(t, count, zz[1]), end="")
+        mass = Integrate(hh, mesh)
+        massList.append(mass)
+        print('\r Time: %.2e, count: %4i, iter: %4i, mass: %.6e'%(t, count, zz[1],
+            mass), end="")
 
 if dim==1:
     hList = np.array(hList)
